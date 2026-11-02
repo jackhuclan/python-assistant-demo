@@ -17,8 +17,11 @@ export default function Chat() {
   const lastIdRef = useRef(0)
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const scrollToBottom = () => bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  useEffect(scrollToBottom, [messages])
+  // 注意：新版 Chromium 的 scrollIntoView 返回 Promise，
+  // 必须用花括号确保 effect 返回 undefined，否则 React 会把 Promise 当清理函数导致崩溃
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
   const refreshMessages = useCallback(async (cid: string) => {
     const data = await api.get<{ status: typeof status; messages: ChatMessage[] }>(

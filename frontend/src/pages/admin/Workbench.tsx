@@ -101,7 +101,9 @@ function WorkbenchChat({ conversationId, onResolved }: { conversationId: string;
     return () => clearInterval(t)
   }, [load])
 
-  useEffect(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), [messages])
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
   const sendReply = async () => {
     const text = reply.trim()
