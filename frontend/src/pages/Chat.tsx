@@ -95,6 +95,7 @@ export default function Chat() {
     setMessages((prev) => [...prev, { role: 'user', content: text }])
 
     let botReply = ''
+    let gotReply = false
     try {
       await streamSse(
         `/api/chat/${conversationId}/message`,
@@ -104,6 +105,7 @@ export default function Chat() {
             const label = (ev.data.intentLabel as string) || null
             setIntentTag(label)
           } else if (ev.event === 'delta') {
+            gotReply = true
             botReply += ev.data.content as string
             setMessages((prev) => {
               const last = prev[prev.length - 1]
@@ -113,12 +115,20 @@ export default function Chat() {
               return [...prev, { role: 'assistant', content: botReply, streaming: true }]
             })
           } else if (ev.event === 'transfer') {
+            gotReply = true
             setStatus('human_pending')
+          } else if (ev.event === 'queued') {
+            gotReply = true
+          } else if (ev.event === 'error') {
+            setError((ev.data.message as string) || '服务处理异常，请稍后重试')
           } else if (ev.event === 'done') {
             lastIdRef.current = 0 // 触发全量拉取，对齐服务端消息 id
           }
         },
       )
+      if (!gotReply) {
+        setError('未收到服务端响应，可能是网络中断或服务不可用，请稍后重试')
+      }
       // done 后以服务端数据为准，替换本地流式副本
       await refreshMessages(conversationId)
     } catch (e) {
@@ -194,6 +204,13 @@ export default function Chat() {
           </div>
         ))}
         <div ref={bottomRef} />
+        {sending && !messages.some((m) => m.streaming) && (
+          <div className="flex justify-start">
+            <div className="rounded-2xl rounded-bl-md bg-slate-100 px-4 py-2.5 text-sm text-slate-400">
+              正在思考<span className="animate-pulse">…</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {error && <div className="mt-2 rounded-lg bg-rose-50 px-4 py-2 text-sm text-rose-600">{error}</div>}
@@ -204,7 +221,13 @@ export default function Chat() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && send()}
+              onKeyDown={(e) => {
+                // 屏蔽中文输入法选字回车（isComposing），避免误发送
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  send()
+                }
+              }}
               placeholder={status === 'bot' ? '输入消息，Enter 发送…' : '人工服务中，输入消息…'}
               className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-indigo-400"
               disabled={sending}

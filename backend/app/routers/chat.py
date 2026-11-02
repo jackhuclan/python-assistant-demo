@@ -42,88 +42,93 @@ async def send_message(conversation_id: str, request: Request):
         return JSONResponse({"error": "会话不存在"}, status_code=404)
 
     async def event_stream():
-        ts = database.now()
-        database.execute(
-            "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?,?,?,?)",
-            (conversation_id, "user", content, ts),
-        )
-        database.execute(
-            "UPDATE conversations SET updated_at = ? WHERE id = ?", (ts, conversation_id)
-        )
-
-        # 人工接管中：不再由机器人回复，等客服处理
-        if conv["status"] in ("human_pending", "human_active"):
-            yield _sse("queued", {"message": "消息已发送，人工客服正在处理中，请稍候。"})
-            yield _sse("done", {})
-            return
-
-        ctx = agent.AgentContext()
-        ctx.intent, ctx.confidence = await agent.detect_intent(content)
-        ctx.faq_hits = agent.search_faqs(content)
-
-        yield _sse("meta", {
-            "intent": ctx.intent,
-            "intentLabel": agent.INTENT_LABELS.get(ctx.intent, ctx.intent),
-            "confidence": round(ctx.confidence, 2),
-            "faqHits": [{"id": h.id, "question": h.question, "score": round(h.score, 2)} for h in ctx.faq_hits],
-        })
-
-        if agent.wants_human(content) or agent.should_transfer(
-            ctx.intent, ctx.confidence, ctx.faq_hits, conv["unresolved_rounds"]
-        ):
-            ctx.transfer = True
-            ts2 = database.now()
+        try:
+            ts = database.now()
             database.execute(
-                "UPDATE conversations SET status = 'human_pending', intent = ?, unresolved_rounds = 0, updated_at = ? WHERE id = ?",
-                (ctx.intent, ts2, conversation_id),
+                "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?,?,?,?)",
+                (conversation_id, "user", content, ts),
             )
+            database.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?", (ts, conversation_id)
+            )
+
+            # 人工接管中：不再由机器人回复，等客服处理
+            if conv["status"] in ("human_pending", "human_active"):
+                yield _sse("queued", {"message": "消息已发送，人工客服正在处理中，请稍候。"})
+                yield _sse("done", {})
+                return
+
+            ctx = agent.AgentContext()
+            ctx.intent, ctx.confidence = await agent.detect_intent(content)
+            ctx.faq_hits = agent.search_faqs(content)
+
+            yield _sse("meta", {
+                "intent": ctx.intent,
+                "intentLabel": agent.INTENT_LABELS.get(ctx.intent, ctx.intent),
+                "confidence": round(ctx.confidence, 2),
+                "faqHits": [{"id": h.id, "question": h.question, "score": round(h.score, 2)} for h in ctx.faq_hits],
+            })
+
+            if agent.wants_human(content) or agent.should_transfer(
+                ctx.intent, ctx.confidence, ctx.faq_hits, conv["unresolved_rounds"]
+            ):
+                ctx.transfer = True
+                ts2 = database.now()
+                database.execute(
+                    "UPDATE conversations SET status = 'human_pending', intent = ?, unresolved_rounds = 0, updated_at = ? WHERE id = ?",
+                    (ctx.intent, ts2, conversation_id),
+                )
+                database.execute(
+                    "INSERT INTO messages (conversation_id, role, content, intent, created_at) VALUES (?,?,?,?,?)",
+                    (conversation_id, "assistant", TRANSFER_NOTICE, ctx.intent, ts2),
+                )
+                yield _sse("delta", {"content": TRANSFER_NOTICE})
+                yield _sse("transfer", {"message": TRANSFER_NOTICE})
+                yield _sse("done", {"transferred": True})
+                return
+
+            history_rows = database.execute(
+                "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+                (conversation_id, config.MAX_HISTORY_TURNS * 2 + 1),
+                fetch="all",
+            )
+            history = [{"role": r["role"] if r["role"] != "human_agent" else "assistant", "content": r["content"]}
+                       for r in reversed(history_rows)]
+            history = history[:-1]  # 去掉刚插入的当前用户消息
+
+            messages = agent.build_chat_messages(history, content, ctx)
+            full_reply = ""
+            try:
+                async for delta in llm.chat_stream(messages):
+                    full_reply += delta
+                    yield _sse("delta", {"content": delta})
+            except llm.LLMError:
+                fallback = (
+                    ctx.faq_hits[0].answer if ctx.faq_hits
+                    else "抱歉，系统暂时遇到了一点问题。您可以稍后重试，或回复「转人工」获取人工客服帮助。"
+                )
+                if not full_reply:
+                    full_reply = fallback
+                    yield _sse("delta", {"content": fallback})
+
+            ts3 = database.now()
             database.execute(
                 "INSERT INTO messages (conversation_id, role, content, intent, created_at) VALUES (?,?,?,?,?)",
-                (conversation_id, "assistant", TRANSFER_NOTICE, ctx.intent, ts2),
+                (conversation_id, "assistant", full_reply, ctx.intent, ts3),
             )
-            yield _sse("delta", {"content": TRANSFER_NOTICE})
-            yield _sse("transfer", {"message": TRANSFER_NOTICE})
-            yield _sse("done", {"transferred": True})
-            return
-
-        history_rows = database.execute(
-            "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-            (conversation_id, config.MAX_HISTORY_TURNS * 2 + 1),
-            fetch="all",
-        )
-        history = [{"role": r["role"] if r["role"] != "human_agent" else "assistant", "content": r["content"]}
-                   for r in reversed(history_rows)]
-        history = history[:-1]  # 去掉刚插入的当前用户消息
-
-        messages = agent.build_chat_messages(history, content, ctx)
-        full_reply = ""
-        try:
-            async for delta in llm.chat_stream(messages):
-                full_reply += delta
-                yield _sse("delta", {"content": delta})
-        except llm.LLMError:
-            fallback = (
-                ctx.faq_hits[0].answer if ctx.faq_hits
-                else "抱歉，系统暂时遇到了一点问题。您可以稍后重试，或回复「转人工」获取人工客服帮助。"
+            unresolved = conv["unresolved_rounds"]
+            if not ctx.faq_hits and ctx.intent in ("order_query", "tech_support"):
+                unresolved += 1
+            else:
+                unresolved = 0
+            database.execute(
+                "UPDATE conversations SET intent = ?, unresolved_rounds = ?, updated_at = ? WHERE id = ?",
+                (ctx.intent, unresolved, ts3, conversation_id),
             )
-            full_reply = full_reply or fallback
-            yield _sse("delta", {"content": fallback if not full_reply else ""})
-
-        ts3 = database.now()
-        database.execute(
-            "INSERT INTO messages (conversation_id, role, content, intent, created_at) VALUES (?,?,?,?,?)",
-            (conversation_id, "assistant", full_reply, ctx.intent, ts3),
-        )
-        unresolved = conv["unresolved_rounds"]
-        if not ctx.faq_hits and ctx.intent in ("order_query", "tech_support"):
-            unresolved += 1
-        else:
-            unresolved = 0
-        database.execute(
-            "UPDATE conversations SET intent = ?, unresolved_rounds = ?, updated_at = ? WHERE id = ?",
-            (ctx.intent, unresolved, ts3, conversation_id),
-        )
-        yield _sse("done", {"transferred": False})
+            yield _sse("done", {"transferred": False})
+        except Exception as exc:  # 兜底：任何未预期异常都以 SSE error 事件返回，避免流静默中断
+            yield _sse("error", {"message": f"服务处理异常，请稍后重试（{type(exc).__name__}）"})
+            yield _sse("done", {})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
