@@ -34,7 +34,10 @@ async def chat_once(messages: list[dict], *, temperature: float = 0.6, max_token
             )
             resp.raise_for_status()
             data = resp.json()
-        return (data["choices"][0]["message"]["content"] or "").strip()
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMError("LLM 返回缺少 choices")
+        return ((choices[0].get("message") or {}).get("content") or "").strip()
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
         raise LLMError(f"LLM 调用失败: {exc}") from exc
 
@@ -64,7 +67,10 @@ async def chat_stream(messages: list[dict], *, temperature: float = 0.6, max_tok
                         chunk = json.loads(data)
                     except ValueError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue  # 跳过 choices 为空的块（如 usage 统计块）
+                    delta = choices[0].get("delta") or {}
                     content = delta.get("content")
                     if content:
                         yield content
