@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    container_name: csa-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env          # 大模型 Key 等敏感配置（参考 backend/.env.example）
+    environment:
+      - DB_PATH=/app/data/csa.db
+      - PORT=8000
+    volumes:
+      - csa-data:/app/data      # SQLite 数据持久化
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: csa-frontend
+    ports:
+      - "8080:80"               # 浏览器访问 http://localhost:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  csa-data:

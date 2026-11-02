@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/lib/api.ts","./src/pages/chat.tsx","./src/pages/admin/adminapp.tsx","./src/pages/admin/conversationdetail.tsx","./src/pages/admin/conversations.tsx","./src/pages/admin/faqmanager.tsx","./src/pages/admin/login.tsx","./src/pages/admin/stats.tsx","./src/pages/admin/workbench.tsx"],"version":"5.6.3"}
