@@ -29,10 +29,12 @@ export default function AdminApp() {
         </div>
         <nav className="flex-1 space-y-1 p-3">
           {[
-            { to: 'workbench', label: '客服工作台', icon: '💬' },
-            { to: 'conversations', label: '对话记录', icon: '📋' },
-            { to: 'faqs', label: 'FAQ 管理', icon: '📚' },
-            { to: 'stats', label: '满意度统计', icon: '📊' },
+            // 注意：必须用绝对路径。本组件挂在 splat 路由 /admin/* 下，
+            // v7_relativeSplatPath 下相对路径会基于当前完整 URL 追加，导致路径累积错误
+            { to: '/admin/workbench', label: '客服工作台', icon: '💬' },
+            { to: '/admin/conversations', label: '对话记录', icon: '📋' },
+            { to: '/admin/faqs', label: 'FAQ 管理', icon: '📚' },
+            { to: '/admin/stats', label: '满意度统计', icon: '📊' },
           ].map((item) => (
             <NavLink
               key={item.to}
@@ -66,7 +68,7 @@ export default function AdminApp() {
 
       <main className="flex-1 overflow-y-auto">
         <Routes>
-          <Route index element={<Navigate to="workbench" replace />} />
+          <Route index element={<Navigate to="/admin/workbench" replace />} />
           <Route path="workbench" element={<Workbench />} />
           <Route path="conversations" element={<Conversations />} />
           <Route path="faqs" element={<FaqManager />} />
